@@ -1,0 +1,55 @@
+# ProxyGosha
+
+> Zero-cost, single-file Telegram WEB Proxy running on Cloudflare Workers (v1.2.2). Unblock Telegram (Desktop, Android, and iOS) across all 6 Cloudflare HTTPS ports with no VPS, no maintenance, and 100% free serverless infrastructure.
+
+## Overview
+ProxyGosha transforms a free Cloudflare Worker (`worker.js`) into a high-performance Telegram WEB proxy server. It listens on all six Cloudflare HTTPS ports (443, 2053, 2083, 2087, 2096, 8443) over HTTPS and WebSockets, serves a deceptive e-commerce decoy landing page to unauthenticated web crawlers and active scanners, and tunnels MTProto traffic directly to official Telegram Data Centers (DCs 1–5) using raw TCP sockets (`cloudflare:sockets`).
+
+## Key Features
+- **Zero Cost & Serverless**: Runs completely on Cloudflare's free tier (100,000 requests/day).
+- **Single File (`worker.js`)**: Pure JavaScript ES Module without external dependencies or npm build steps.
+- **6-Port DPI Bypass**: Concurrently supports all 6 Cloudflare HTTPS ports (`443`, `2053`, `2083`, `2087`, `2096`, `8443`) with isolated, deterministically derived per-port secrets.
+- **Fast Mode (Zero-CPU Downloads)**: DC-to-client payloads match the client cipher keystream, allowing heavy download data (media/files) to pass through untouched with near-zero CPU consumption.
+- **Upstream Batching**: Coalesces small upstream MTProto frames before encrypting and writing to DC sockets, slashing WebCrypto CPU execution overhead.
+- **Live Telemetry & DC Probe**: Built-in admin status dashboard (`/<ADMIN_KEY>/status`) with real-time metrics (active sessions, bandwidth, isolate uptime) and on-demand Telegram DC reachability and latency testing (`?probe=1`).
+- **Privacy-Preserving & Stealth**: No user IP addresses, tokens, or secrets are ever logged or persisted. Unauthorized requests hit an authentic multi-page e-commerce decoy storefront (LUXVEIL).
+- **One-Variable Admin Setup**: Setting `ADMIN_KEY` automatically generates and manages the admin panel, bilingual setup guides (English and Persian), and cryptographic port secrets.
+
+## Technical Specifications
+- **Version**: 1.2.2
+- **Runtime**: Cloudflare Workers (V8 JavaScript isolate).
+- **Transport**: HTTPS & WSS (Ports: 443, 2053, 2083, 2087, 2096, 8443).
+- **Carrier Modes**: `websocket-lanes` (default, multi-stream multiplexing) or `websocket` (single stream).
+- **Socket Driver**: `cloudflare:sockets` TCP outbound socket with automatic socket cleanup and failover.
+- **Protocol**: Telegram Desktop "WEB" proxy carrier (Bridge protocol) + MTProto Obfuscated2.
+- **Client Compatibility**: Telegram Desktop, Android, and iOS (where WEB proxy is supported).
+- **Middle-End & Ad Tags**: Sponsored channel ad tags (ME route) are incompatible with Cloudflare Workers due to dynamic NAPT source port translation in Cloudflare's egress network; ProxyGosha uses direct-DC routing.
+
+## Configuration & Environment Variables
+Configured in Cloudflare Dashboard -> Workers & Pages -> Settings -> Variables and Secrets:
+- `ADMIN_KEY`: **Required.** Administrative password (>= 16 characters). Controls access to the panel and derives all port secrets.
+- `SECRET`: **Optional.** Fixed 32-character hexadecimal secret. Set if you want to change `ADMIN_KEY` later without invalidating previously shared links.
+- `EXTRA_HOSTS`: **Optional.** Comma-separated list of secondary custom domains bound to this Worker.
+- `DECOY_URL`: **Optional.** Reverse-proxy URL to mirror an external website instead of the built-in decoy store.
+- `CARRIER`: **Optional.** Default is `websocket-lanes`. Set to `websocket` if needed.
+- `HOSTNAME`: **Optional.** Comma-separated domain allowlist (default: `*`).
+- `DEBUG`: **Optional.** Set to `"true"` to enable diagnostic logs.
+
+## Admin & Diagnostics Endpoints
+- **Management Panel**: `https://<YOUR_CUSTOM_DOMAIN>/<ADMIN_KEY>` (Displays ready-to-click Telegram links and manual connection parameters for all 6 ports).
+- **Live Status & DC Probe**: `https://<YOUR_CUSTOM_DOMAIN>/<ADMIN_KEY>/status` (Real-time bandwidth, active sessions, isolate uptime, and `?probe=1` DC latency tester).
+
+## Domain Requirements
+The default `*.workers.dev` domain is blocked by state-level firewalls in countries like Iran, China, and Russia. A **custom domain** bound in Cloudflare (Settings -> Domains & Routes) is required for stable connectivity.
+
+## Community & Updates
+- **Telegram Updates Channel**: [t.me/amirdotlog](https://t.me/amirdotlog)
+- **YouTube Channel**: [youtube.com/@amirmarandidev](https://www.youtube.com/@amirmarandidev)
+
+## Repository Files
+- [worker.js](worker.js): The complete single-file proxy implementation.
+- [README.md](README.md): English user documentation and setup guide.
+- [README.fa.md](README.fa.md): Persian (فارسی) user documentation and setup guide.
+- [README.ru.md](README.ru.md): Russian (Русский) user documentation and setup guide.
+- [README.zh.md](README.zh.md): Simplified Chinese (简体中文) user documentation and setup guide.
+- [LICENSE](LICENSE): Open-source MIT License.

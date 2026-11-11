@@ -1,0 +1,135 @@
+# ProxyGosha - Complete Technical Documentation for LLMs
+
+> Single-File Zero-Cost Telegram WEB Proxy for Cloudflare Workers (v1.2.2).
+
+## 1. Project Identity & Architecture
+
+ProxyGosha (`worker.js`) is a high-performance implementation of Telegram's "WEB" proxy carrier designed to run inside Cloudflare Workers without dedicated servers or VPS infrastructure.
+
+### The Problem It Solves
+Traditional MTProto proxies require:
+- A dedicated Linux Virtual Private Server (VPS) with recurring monthly hosting fees.
+- Exposure to active probing, deep packet inspection (DPI), and IP blocking on traditional ports.
+- Manual SSL/TLS certificate renewal, firewall rules, and container/process daemon management.
+
+ProxyGosha eliminates these requirements:
+- **Serverless & Free**: Runs 100% on Cloudflare Workers Free plan (100,000 requests/day).
+- **Stealth TLS Camouflage**: All traffic passes over standard Cloudflare HTTPS / WSS on ports `443`, `2053`, `2083`, `2087`, `2096`, and `8443` backed by Cloudflare's trusted Anycast certificates.
+- **Active Probing Neutralization**: Unauthenticated browser visits, network scanners, and censors' DPI probes receive a realistic e-commerce storefront (LUXVEIL fashion brand) with authentic headers, `/robots.txt`, `/favicon.ico`, and `/health` endpoints.
+- **Direct-to-DC Tunneling**: Outbound connections to official Telegram Data Centers (DCs 1–5) use Cloudflare's native `connect()` API from `cloudflare:sockets`.
+
+### High-Level Topology
+```text
+[ Telegram Client (Desktop / Android / iOS) ]
+          │  HTTPS / WSS (Ports: 443, 2053, 2083, 2087, 2096, 8443)
+          ▼
+[ Cloudflare Global Anycast Edge ]
+          │
+          ▼
+[ worker.js (ProxyGosha v1.2.2) ]
+  ├── Decoy Camouflage Engine (serves realistic e-commerce HTML)
+  ├── Route Dispatcher (Decoy / Setup / Panel / Status / Session / WS)
+  ├── Token & Port Secret Engine (HMAC-SHA256, deterministic derivation)
+  ├── Fast Mode Pipe (0-CPU passthrough on downstream downloads)
+  ├── Upstream Batcher (coalesces small frames before encryption)
+  └── Stream Multiplexer (`websocket-lanes` or `websocket`)
+          │  cloudflare:sockets (Raw Outbound TCP)
+          ▼
+[ Official Telegram Data Centers (DCs 1–5) ]
+```
+
+---
+
+## 2. Protocol & Performance Optimizations
+
+### Telegram "WEB" Proxy Carrier Protocol
+Telegram introduced the "WEB" proxy mode to tunnel MTProto traffic through standard HTTPS / WebSocket links:
+- **Carrier Endpoint**: `/api/v1/session` (POST bootstrap token) and `/api/v1/ws` (WebSocket upgrade).
+- **Framing**: Binary multiplexed frames: `OPEN (0x01)`, `DATA (0x02)`, `CLOSE (0x03)`, `WINDOW (0x04)`, `PING (0x05)`, `PONG (0x06)`.
+- **Stream Allocation**: Each logical MTProto stream is assigned an ID. Cloudflare Workers enforce a concurrency limit (`maxStreams: 6`) to protect Free plan socket quotas.
+
+### Fast Mode (Zero-CPU Downstream Forwarding)
+In standard MTProto relays, incoming traffic from the DC must be decrypted by the proxy and re-encrypted for the client. In ProxyGosha:
+- The initial 64-byte DC Obfuscated2 header is deliberately constructed so that the DC derives encryption keys matching the exact keystream expected by the client.
+- As a result, bytes arriving from the Telegram DC are already encrypted for the client: they are forwarded directly without any AES-CTR work, eliminating CPU overhead for media/file downloads (which account for 90%+ of Telegram traffic).
+
+### Upstream Batching (Uplink Optimization)
+Telegram MTProto client traffic often consists of small bursts (acks, typing indicators, short messages).
+- ProxyGosha coalesces queued upstream frames up to 256 KiB (`UP_BATCH_BYTES`) before invoking WebCrypto `ctrAt` and socket writes.
+- Coalescing replaces multiple `crypto.subtle.encrypt` calls with a single batch operation and grants a unified `WINDOW` frame, dramatically conserving Cloudflare Workers CPU budget.
+
+### 6-Port DPI Bypass Architecture
+To bypass network throttling on port 443 in restrictive regions:
+- The worker listens on all six Cloudflare HTTPS ports: `443`, `2053`, `2083`, `2087`, `2096`, and `8443`.
+- Each port uses a distinct, deterministically derived secret:
+  `portSecret = sha256("proxygosha-port-secret-v1\n" + baseSecret + "\n" + port).slice(0, 16)`
+- This prevents cross-port correlation by DPI middleboxes and allows users to switch ports instantly if one becomes degraded.
+
+### Why Middle-End (ME) / Ad Tags are Not Supported
+Telegram's Middle-End (ME) protocol (which enables sponsored channel ad tags via `@MTProxybot`) derives session encryption keys using the proxy's outbound TCP egress IP and source port as observed on Telegram's network interface.
+- Cloudflare Workers outbound TCP sockets (`cloudflare:sockets`) exit through shared Anycast CGNAT/NAPT edge infrastructure where the egress port is dynamically rewritten.
+- Workers cannot bind local ports or run raw UDP STUN tests.
+- Because the calculated keys mathematically mismatch, direct ME handshakes fail. ProxyGosha cleanly and reliably routes traffic directly to Telegram's front-end DCs.
+
+---
+
+## 3. Configuration & Management
+
+### One-Variable Setup
+Only `ADMIN_KEY` is required in Cloudflare Dashboard (Settings -> Variables and Secrets):
+- `ADMIN_KEY`: (String, Required) Secret administrative password (minimum 16 alphanumeric characters).
+- All proxy secrets, port configurations, and panel tokens are deterministically derived from `ADMIN_KEY`.
+- If `ADMIN_KEY` is not configured, the worker displays an interactive bilingual setup page proposing a random key.
+
+### Optional Variables
+- `SECRET`: Fixed 32-character hex secret for port 443. Set this if you wish to change `ADMIN_KEY` in the future without breaking previously distributed connection links.
+- `EXTRA_HOSTS`: Comma-separated list of additional hostnames/domains assigned to this worker.
+- `DECOY_URL`: External website URL to reverse-proxy as the decoy instead of the built-in LUXVEIL store.
+- `CARRIER`: `"websocket-lanes"` (default) or `"websocket"`.
+- `HOSTNAME`: Comma-separated domain allowlist (default: `*`).
+- `DEBUG`: Set to `"true"` or `"1"` to output diagnostic logs.
+
+### Management & Telemetry Endpoints
+- **Management Panel**: `https://<YOUR_DOMAIN>/<ADMIN_KEY>`  
+  Displays one-tap **Connect in Telegram** buttons and manual connection tables for all 6 ports.
+- **Live Status & DC Probe**: `https://<YOUR_DOMAIN>/<ADMIN_KEY>/status`  
+  Displays isolate uptime, active WebSocket sessions, total streams, bandwidth up/down, and recent events log. Includes an on-demand **Telegram DC Reachability Probe** (`?probe=1`) that tests direct TCP latency from Cloudflare edge to official Telegram DCs (DC1–DC5).
+- **Privacy Assurance**: Telemetry counters and event logs are strictly ephemeral (stored in isolate memory, reset on isolate recycling). No user IP addresses, tokens, or cryptographic keys are ever logged.
+
+---
+
+## 4. Domain Requirements & Circumvention
+
+The default `*.workers.dev` subdomain provided by Cloudflare is blocked by SNI and DNS filtering in several countries:
+- **Iran**: Comprehensive block of `*.workers.dev`.
+- **China**: Great Firewall (GFW) DNS tampering and SNI reset on `*.workers.dev`.
+- **Russia**: Roskomnadzor restrictions targeting default developer domains.
+
+**Requirement**: A custom domain must be attached to the Worker via Cloudflare Dashboard -> Settings -> Domains & Routes -> Custom Domain (e.g. `tg.yourdomain.com`).
+- Free domain registrars (e.g. [digitalplat.org](https://domain.digitalplat.org/)) can be used.
+- National ccTLDs (such as `.ir` or `.ru`) are functional but subject to national registry verification.
+- Low-cost international TLDs (e.g. `.xyz`, `.top` via Namecheap) can be registered with cryptocurrency or international cards.
+
+---
+
+## 5. Client Link Format
+```text
+tg://webproxy?server=<YOUR_CUSTOM_DOMAIN>&port=<PORT>&secret=<PORT_SECRET>
+```
+Supported ports: `443`, `2053`, `2083`, `2087`, `2096`, `8443`.
+
+---
+
+## 6. Official Community Links
+- Telegram Channel: [t.me/amirdotlog](https://t.me/amirdotlog)
+- YouTube Channel: [youtube.com/@amirmarandidev](https://www.youtube.com/@amirmarandidev)
+
+---
+
+## 7. Repository Files
+- `worker.js`: Complete single-file ES Module implementation.
+- `README.md`: English documentation and deployment walkthrough.
+- `README.fa.md`: Persian (فارسی) documentation and guide.
+- `README.ru.md`: Russian (Русский) documentation and guide.
+- `README.zh.md`: Simplified Chinese (简体中文) documentation and guide.
+- `LICENSE`: MIT License.
